@@ -198,10 +198,20 @@ app.post('/api/posts', requireAuth, async (req, res, next) => {
   try {
     const caption = limitedText(req.body.caption, 500, '게시물 내용');
     const image = checkedImage(req.body.image || '');
-    const emoji = limitedText(req.body.emoji, 8, '이모지') || '✨';
+    const emoji = limitedText(req.body.emoji, 8, '이모지');
     if (!caption && !image) return bad(res, 400, '사진이나 내용을 추가해 주세요.');
-    const result = await pool.query('INSERT INTO posts(user_id,caption,image_data,emoji) VALUES($1,$2,$3,$4) RETURNING id', [req.user.id, caption, image, emoji]);
-    res.status(201).json({ id: Number(result.rows[0].id) });
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const post = await client.query('INSERT INTO posts(user_id,caption,image_data,emoji) VALUES($1,$2,$3,$4) RETURNING id', [req.user.id, caption, image, emoji]);
+      const storyCaption = caption.slice(0, 500);
+      const story = await client.query(`INSERT INTO stories(user_id,caption,image_data,emoji,expires_at) VALUES($1,$2,$3,'',NOW()+INTERVAL '24 hours') RETURNING id`, [req.user.id, storyCaption, image]);
+      await client.query('COMMIT');
+      res.status(201).json({ id: Number(post.rows[0].id), storyId: Number(story.rows[0].id) });
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw error;
+    } finally { client.release(); }
   } catch (error) { next(error); }
 });
 app.delete('/api/posts/:id', requireAuth, async (req, res, next) => {
@@ -231,7 +241,7 @@ app.post('/api/posts/:id/comments', requireAuth, async (req, res, next) => {
 
 app.post('/api/stories', requireAuth, async (req, res, next) => {
   try {
-    const caption = limitedText(req.body.caption, 300, '스토리 내용');
+      const caption = limitedText(req.body.caption, 500, '스토리 내용');
     const image = checkedImage(req.body.image || '');
     const emoji = limitedText(req.body.emoji, 8, '이모지') || '🌷';
     if (!caption && !image) return bad(res, 400, '사진이나 내용을 추가해 주세요.');
