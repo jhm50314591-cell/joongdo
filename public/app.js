@@ -3,17 +3,23 @@ let currentUser = null;
 let state = null;
 let page = 'home';
 let activeChat = null;
+let activeCommentPost = null;
 let modal = null;
 let modalDraft = {};
 let activeStory = null;
 let storyQueue = [];
 let storyIndex = 0;
+let storyUserQueues = [];
+let storyUserIndex = 0;
 let storyTimer = null;
 let storyDeadline = 0;
 let storyRemaining = 5000;
 let storyProgress = 0;
 let storyPaused = false;
 let storyTouchPaused = false;
+let storyTouchStartedAt = 0;
+let storyIgnoreNextTap = false;
+let storyPausedByInput = false;
 let authMode = 'login';
 let busy = false;
 let pollTimer = null;
@@ -144,7 +150,7 @@ function homePage() {
 }
 function postCard(post) {
   const owner = byId(post.user), liked = post.likes.includes(Number(me().id));
-  return `<article class="post"><div class="post-head">${avatar(owner,'small')}<div class="post-author"><strong>${esc(owner.name)}</strong><small>@${esc(owner.handle)} · ${when(post.created)}</small></div>${Number(post.user)===Number(me().id)?`<button class="more" aria-label="게시물 삭제" data-delete-post="${post.id}">···</button>`:''}</div>${post.image?`<img class="post-image" src="${post.image}" alt="게시물 이미지">`:`<div class="post-placeholder text-only"><span>${esc(post.caption)}</span></div>`}<div class="post-actions"><button class="${liked?'liked':''}" aria-label="좋아요" data-like="${post.id}">${liked?'♥':'♡'}</button><button aria-label="댓글" data-comment-focus="${post.id}">◯</button><span class="post-like-count">${post.likes.length}명이 좋아합니다</span></div><div class="post-content"><div><strong>${esc(owner.name)}</strong><span class="caption">${esc(post.caption)}</span></div><div class="comment-list">${post.comments.slice(-4).map(comment=>`<div><b>${esc(comment.name||byId(comment.user).name)}</b> ${esc(comment.text)}</div>`).join('')}</div></div><form class="comment-form" data-comment="${post.id}"><input placeholder="댓글 남기기…" aria-label="댓글"><button>게시</button></form></article>`;
+  return `<article class="post"><div class="post-head">${avatar(owner,'small')}<div class="post-author"><strong>${esc(owner.name)}</strong><small>@${esc(owner.handle)} · ${when(post.created)}</small></div>${Number(post.user)===Number(me().id)?`<button class="more" aria-label="게시물 삭제" data-delete-post="${post.id}">···</button>`:''}</div>${post.image?`<img class="post-image" src="${post.image}" alt="게시물 이미지">`:`<div class="post-placeholder text-only"><span>${esc(post.caption)}</span></div>`}<div class="post-actions"><button class="${liked?'liked':''}" aria-label="좋아요" data-like="${post.id}">${liked?'♥':'♡'}</button><button aria-label="댓글 ${post.comments.length}개 보기" data-open-comments="${post.id}">◯</button><span class="post-like-count">${post.likes.length}명이 좋아합니다</span></div><div class="post-content"><div><strong>${esc(owner.name)}</strong><span class="caption">${esc(post.caption)}</span></div><button class="comment-open-link" data-open-comments="${post.id}">${post.comments.length?`댓글 ${post.comments.length}개 모두 보기`:'댓글 남기기'}</button></div></article>`;
 }
 function rightRail() {
   const newNotifications=state.notifications.filter(item=>!item.read).slice(0,3);
@@ -166,12 +172,16 @@ function notificationsPage() {
 }
 
 function modalHtml() {
-  const titles={post:'새 게시물',story:'스토리 올리기',profile:'프로필 편집',chat:'새 대화'};
+  const titles={post:'새 게시물',story:'스토리 올리기',profile:'프로필 편집',chat:'새 대화',comments:'댓글'};
   let content='';
   if (modal==='post'||modal==='story') content=`<form id="create-form"><label class="field">사진<input type="file" name="image" accept="image/*"><span class="eyebrow">${modal==='post'?'게시물은 24시간 스토리에도 자동으로 공유됩니다.':'사진 없이 글과 이모지를 올릴 수도 있습니다.'}</span></label><label class="field">내용<textarea name="caption" maxlength="500" placeholder="사우들과 나누고 싶은 이야기를 적어 주세요."></textarea></label>${modal==='story'?'<label class="field">이모지<input name="emoji" maxlength="8" value="🌷"></label>':''}<div id="file-preview"></div><button class="button full">${modal==='post'?'게시하기':'스토리 공유하기'}</button></form>`;
+  if (modal==='comments') {
+    const post=state.posts.find(item=>Number(item.id)===Number(activeCommentPost));
+    content=post?`<div class="comment-modal-content"><div class="comment-modal-list">${post.comments.map(comment=>`<div class="comment-row">${avatar(byId(comment.user),'small')}<p><b>${esc(comment.name||byId(comment.user).name)}</b> ${esc(comment.text)}<small>${when(comment.created)}</small></p></div>`).join('')||'<div class="empty">아직 댓글이 없습니다. 첫 댓글을 남겨 보세요.</div>'}</div><form class="comment-modal-form" id="post-comment-form"><input maxlength="300" placeholder="댓글을 입력하세요…" aria-label="댓글"><button class="button">게시</button></form></div>`:'<div class="empty">게시물을 찾지 못했습니다.</div>';
+  }
   if (modal==='profile') content=`<form id="profile-form"><label class="field">이름<input name="name" required maxlength="30" value="${esc(me().name)}"></label><label class="field">사용자 이름<input name="handle" required maxlength="24" value="${esc(me().handle)}"></label><label class="field">소개<textarea name="bio" maxlength="120">${esc(me().bio)}</textarea></label><label class="field">프로필 사진<input name="photo" type="file" accept="image/*"></label><div id="profile-preview"></div><button class="button full">저장하기</button></form>`;
   if (modal==='chat') content=`<form id="chat-form"><label class="field">대화 이름<input name="title" maxlength="50" placeholder="예: 주말 약속"></label><div class="field">함께할 사우들${state.users.filter(user=>Number(user.id)!==Number(me().id)).map(user=>`<label class="member-option"><input type="checkbox" name="members" value="${user.id}">${esc(user.name)}</label>`).join('')||'<p class="eyebrow">아직 다른 회원이 가입하지 않았습니다.</p>'}</div><button class="button full">대화 만들기</button></form>`;
-  return `<div class="modal-backdrop" id="modal-bg"><section class="modal"><header class="modal-head"><h2>${titles[modal]}</h2><button class="close" data-close>×</button></header>${content}</section></div>`;
+  return `<div class="modal-backdrop" id="modal-bg"><section class="modal ${modal==='comments'?'comments-modal':''}"><header class="modal-head"><h2>${titles[modal]}</h2><button class="close" data-close>×</button></header>${content}</section></div>`;
 }
 function storyHtml() {
   const story=state.stories.find(item=>Number(item.id)===Number(activeStory));
@@ -179,13 +189,23 @@ function storyHtml() {
   const owner=byId(story.user);
   const currentIndex=storyQueue.findIndex(item=>Number(item.id)===Number(story.id));
   const segments=storyQueue.map((item,index)=>`<span class="story-progress-segment ${index<currentIndex?'completed':index===currentIndex?'current':'future'}"><i style="--story-progress:${index<currentIndex?1:index===currentIndex?storyProgress:0};--story-remaining:${index===currentIndex?storyRemaining:0}ms;--story-play-state:${storyPaused?'paused':'running'}"></i></span>`).join('');
-  return `<div class="modal-backdrop" id="story-bg"><section class="story-view" style="${story.image?`background-image:linear-gradient(#0005,#0005),url('${story.image}')`:''}"><div><div class="story-progress">${segments}</div><div class="story-owner">${avatar(owner,'small')}<b>${esc(owner.name)}</b><small>${when(story.created)}</small><button class="story-play-toggle" data-story-toggle aria-label="${storyPaused?'스토리 재생':'스토리 일시정지'}">${storyPaused?'▶':'Ⅱ'}</button><button class="close" data-close-story>×</button></div></div><div class="story-content">${!story.image&&story.emoji?`<div class="story-emoji">${esc(story.emoji)}</div>`:''}<div>${esc(story.caption)}</div></div>${Number(story.user)===Number(me().id)?'<div class="pill" style="align-self:center">내 스토리</div>':`<form class="story-msg" id="story-reply"><input maxlength="300" placeholder="${esc(owner.name)}님에게 답장…"><button>보내기</button></form>`}</section></div>`;
+  const storyComments=story.comments||[];
+  const canMessage=Number(story.user)!==Number(me().id);
+  return `<div class="modal-backdrop" id="story-bg"><button class="story-arrow story-arrow-prev" data-story-prev aria-label="이전 스토리" ${!hasPreviousStory()?'disabled':''}>‹</button><section class="story-view" style="${story.image?`background-image:linear-gradient(#0005,#0005),url('${story.image}')`:''}"><div><div class="story-progress">${segments}</div><div class="story-owner">${avatar(owner,'small')}<b>${esc(owner.name)}</b><small>${when(story.created)}</small><button class="story-play-toggle" data-story-toggle aria-label="${storyPaused?'스토리 재생':'스토리 일시정지'}">${storyPaused?'▶':'■'}</button><button class="close" data-close-story>×</button></div></div><div class="story-content">${!story.image&&story.emoji?`<div class="story-emoji">${esc(story.emoji)}</div>`:''}<div>${esc(story.caption)}</div></div><div class="story-footer"><div class="story-comment-list">${storyComments.slice(-3).map(comment=>`<div><b>${esc(comment.name||byId(comment.user).name)}</b> ${esc(comment.text)}</div>`).join('')}</div><form class="story-comment-form" id="story-comment"><input maxlength="300" placeholder="스토리에 댓글 남기기…" aria-label="스토리 댓글"><button aria-label="댓글 보내기">↑</button></form>${canMessage?`<button class="story-private-toggle" data-story-private-toggle>비공개 메시지로 답장</button><form class="story-msg" id="story-reply" hidden><input maxlength="300" placeholder="${esc(owner.name)}님에게 비공개 답장…"><button>보내기</button></form>`:''}</div></section><button class="story-arrow story-arrow-next" data-story-next aria-label="다음 스토리" ${!hasNextStory()?'disabled':''}>›</button></div>`;
 }
 
+function buildStoryUserQueues() {
+  const grouped=new Map();
+  for(const story of state.stories){const id=Number(story.user);if(!grouped.has(id))grouped.set(id,[]);grouped.get(id).push(story);}
+  return [...grouped.entries()].map(([userId,stories])=>({userId,stories:stories.sort((a,b)=>new Date(a.created)-new Date(b.created))})).sort((a,b)=>new Date(b.stories.at(-1).created)-new Date(a.stories.at(-1).created));
+}
+function hasPreviousStory() { return storyIndex>0||storyUserIndex>0; }
+function hasNextStory() { return storyIndex<storyQueue.length-1||storyUserIndex<storyUserQueues.length-1; }
 function openStoryUser(userId) {
-  storyQueue=state.stories.filter(item=>Number(item.user)===Number(userId)).sort((a,b)=>new Date(a.created)-new Date(b.created));
-  if (!storyQueue.length) { modal='story';modalDraft={};render();return; }
-  storyIndex=0;activeStory=storyQueue[0].id;storyPaused=false;storyProgress=0;storyRemaining=5000;render();startStoryTimer();
+  storyUserQueues=buildStoryUserQueues();
+  storyUserIndex=storyUserQueues.findIndex(group=>group.userId===Number(userId));
+  if (storyUserIndex<0) { modal='story';modalDraft={};render();return; }
+  storyQueue=storyUserQueues[storyUserIndex].stories;showStory(0);
 }
 function startStoryTimer() {
   clearTimeout(storyTimer);
@@ -194,22 +214,41 @@ function startStoryTimer() {
   storyTimer=setTimeout(advanceStory,storyRemaining);
 }
 function advanceStory() {
-  if (storyIndex+1<storyQueue.length) {
-    storyIndex++;activeStory=storyQueue[storyIndex].id;storyPaused=false;storyProgress=0;storyRemaining=5000;render();startStoryTimer();
-  } else closeStory();
+  if(storyIndex+1<storyQueue.length)return moveStoryTo(storyUserIndex,storyIndex+1);
+  if(storyUserIndex+1<storyUserQueues.length)return moveStoryTo(storyUserIndex+1,0);
+  closeStory();
 }
-function pauseStory() {
+function previousStory() {
+  if(storyIndex>0)return moveStoryTo(storyUserIndex,storyIndex-1);
+  if(storyUserIndex>0){const previousIndex=storyUserIndex-1;return moveStoryTo(previousIndex,storyUserQueues[previousIndex].stories.length-1);}
+}
+function moveStoryTo(userIndex,index) {
+  if(index<0||userIndex<0)return;
+  if(userIndex>=storyUserQueues.length)return closeStory();
+  storyUserIndex=userIndex;storyQueue=storyUserQueues[storyUserIndex].stories;
+  if(index>=storyQueue.length)return closeStory();
+  showStory(index);
+}
+function showStory(index) {
+  storyIndex=index;activeStory=storyQueue[storyIndex].id;storyPaused=false;storyPausedByInput=false;storyProgress=0;storyRemaining=5000;render();startStoryTimer();
+}
+function pauseStory(redraw=true) {
   if (!activeStory||storyPaused) return;
   storyRemaining=Math.max(0,storyDeadline-Date.now());
   storyProgress=Math.min(1,1-storyRemaining/5000);
-  storyPaused=true;clearTimeout(storyTimer);render();
+  storyPaused=true;clearTimeout(storyTimer);
+  if (redraw) render();
+  else document.querySelector('.story-progress-segment.current>i')?.getAnimations().forEach(animation=>animation.pause());
 }
-function resumeStory() {
+function resumeStory(redraw=true) {
   if (!activeStory||!storyPaused) return;
-  storyPaused=false;render();startStoryTimer();
+  storyPaused=false;
+  if (redraw) render();
+  else document.querySelector('.story-progress-segment.current>i')?.getAnimations().forEach(animation=>animation.play());
+  startStoryTimer();
 }
 function closeStory() {
-  clearTimeout(storyTimer);activeStory=null;storyQueue=[];storyIndex=0;storyDeadline=0;storyRemaining=5000;storyProgress=0;storyPaused=false;storyTouchPaused=false;render();
+  clearTimeout(storyTimer);activeStory=null;storyQueue=[];storyIndex=0;storyUserQueues=[];storyUserIndex=0;storyDeadline=0;storyRemaining=5000;storyProgress=0;storyPaused=false;storyTouchPaused=false;storyTouchStartedAt=0;storyIgnoreNextTap=false;storyPausedByInput=false;render();
 }
 
 function bind() {
@@ -219,16 +258,38 @@ function bind() {
     render();
   });
   document.querySelectorAll('[data-modal]').forEach(button=>button.onclick=()=>{modal=button.dataset.modal;modalDraft={};render();});
-  document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>{modal=null;render();});
-  document.querySelector('#modal-bg')?.addEventListener('click',event=>{if(event.target.id==='modal-bg'){modal=null;render();}});
+  document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>{modal=null;activeCommentPost=null;render();});
+  document.querySelector('#modal-bg')?.addEventListener('click',event=>{if(event.target.id==='modal-bg'){modal=null;activeCommentPost=null;render();}});
   document.querySelectorAll('[data-close-story]').forEach(button=>button.onclick=closeStory);
   document.querySelector('#story-bg')?.addEventListener('click',event=>{if(event.target.id==='story-bg')closeStory();});
   document.querySelectorAll('[data-story-user]').forEach(button=>button.onclick=()=>openStoryUser(button.dataset.storyUser));
-  document.querySelector('[data-story-toggle]')?.addEventListener('click',()=>storyPaused?resumeStory():pauseStory());
-  document.querySelector('.story-view')?.addEventListener('pointerdown',event=>{if(event.pointerType==='touch'&&!event.target.closest('button,input,form')){storyTouchPaused=true;pauseStory();}});
+  document.querySelectorAll('[data-story-toggle]').forEach(button=>button.onclick=()=>storyPaused?resumeStory():pauseStory());
+  document.querySelector('[data-story-prev]')?.addEventListener('click',previousStory);
+  document.querySelector('[data-story-next]')?.addEventListener('click',advanceStory);
+  document.querySelector('.story-view')?.addEventListener('click',event=>{
+    if (storyIgnoreNextTap) { storyIgnoreNextTap=false; return; }
+    if (!window.matchMedia('(max-width: 680px)').matches||event.target.closest('button,input,form,a,.story-footer')) return;
+    const bounds=event.currentTarget.getBoundingClientRect();
+    if (event.clientX<bounds.left+bounds.width/2) previousStory(); else advanceStory();
+  });
+  document.querySelector('.story-view')?.addEventListener('pointerdown',event=>{storyIgnoreNextTap=false;if(event.pointerType==='touch'&&!event.target.closest('button,input,form,.story-footer')){storyTouchPaused=true;storyTouchStartedAt=Date.now();pauseStory(false);}});
+  const storyInputs=document.querySelectorAll('#story-comment input,#story-reply input');
+  storyInputs.forEach(input=>{
+    input.addEventListener('focus',()=>{if(!storyPaused){storyPausedByInput=true;pauseStory(false);}});
+    input.addEventListener('blur',()=>{if(storyPausedByInput){storyPausedByInput=false;resumeStory(false);}});
+  });
+  document.querySelector('[data-story-private-toggle]')?.addEventListener('click',event=>{
+    const form=document.querySelector('#story-reply');form.hidden=!form.hidden;
+    event.currentTarget.textContent=form.hidden?'비공개 메시지로 답장':'비공개 답장 닫기';
+    if(!form.hidden)form.querySelector('input')?.focus();
+  });
   document.querySelectorAll('[data-like]').forEach(button=>button.onclick=async()=>mutate(`/api/posts/${button.dataset.like}/like`,{},'좋아요를 저장했습니다.'));
-  document.querySelectorAll('[data-comment]').forEach(form=>form.onsubmit=async event=>{event.preventDefault();const input=form.querySelector('input'),text=input.value.trim();if(!text)return;await mutate(`/api/posts/${form.dataset.comment}/comments`,{text},'댓글을 남겼습니다.');});
-  document.querySelectorAll('[data-comment-focus]').forEach(button=>button.onclick=()=>document.querySelector(`[data-comment="${button.dataset.commentFocus}"] input`)?.focus());
+  document.querySelectorAll('[data-open-comments]').forEach(button=>button.onclick=()=>{activeCommentPost=Number(button.dataset.openComments);modal='comments';render();});
+  document.querySelector('#post-comment-form')?.addEventListener('submit',event=>{
+    event.preventDefault();const text=event.currentTarget.querySelector('input').value.trim();
+    if(text&&activeCommentPost)mutate(`/api/posts/${activeCommentPost}/comments`,{text},'댓글을 남겼습니다.');
+  });
+  document.querySelector('#story-comment')?.addEventListener('submit',submitStoryComment);
   document.querySelectorAll('[data-delete-post]').forEach(button=>button.onclick=async()=>{if(!confirm('이 게시물을 삭제할까요?'))return;await mutate(`/api/posts/${button.dataset.deletePost}`,{},'게시물을 삭제했습니다.','DELETE');});
   document.querySelectorAll('[data-chat]').forEach(button=>button.onclick=()=>{activeChat=button.dataset.chat;render();});
   document.querySelectorAll('[data-dm]').forEach(button=>button.onclick=async()=>{try{const result=await api('/api/chats',{method:'POST',body:JSON.stringify({members:[Number(button.dataset.dm)]})});activeChat=result.id;page='messages';await refresh(false);render();}catch(error){toast(error.message);}});
@@ -250,6 +311,23 @@ async function submitContent(event) {
     await api(kind==='post'?'/api/posts':'/api/stories',{method:'POST',body:JSON.stringify({caption:fd.get('caption'),emoji:fd.get('emoji'),image:modalDraft.image||''})});
     modal=null;modalDraft={};await refresh(false);render();toast(kind==='post'?'게시물과 스토리를 올렸습니다.':'스토리를 공유했습니다.');
   } catch(error) { toast(error.message); }
+}
+async function submitStoryComment(event) {
+  event.preventDefault();
+  const text=event.currentTarget.querySelector('input').value.trim();
+  if(!text||!activeStory)return;
+  const storyId=activeStory,resumeAfter=!storyPaused||storyPausedByInput;
+  storyPausedByInput=false;
+  if(!storyPaused)pauseStory(false);
+  try {
+    await api(`/api/stories/${storyId}/comments`,{method:'POST',body:JSON.stringify({text})});
+    await refresh(false);render();
+    if(resumeAfter&&storyPaused)resumeStory();
+    toast('스토리에 댓글을 남겼습니다.');
+  } catch(error) {
+    if(resumeAfter&&storyPaused)resumeStory(false);
+    toast(error.message);
+  }
 }
 async function saveProfile(event) {
   event.preventDefault();const fd=new FormData(event.currentTarget);
@@ -276,8 +354,8 @@ async function sendMessage(event) {
 }
 async function sendStoryReply(event) {
   event.preventDefault();const text=event.currentTarget.querySelector('input').value.trim();if(!text)return;
-  try { const result=await api(`/api/stories/${activeStory}/reply`,{method:'POST',body:JSON.stringify({text})});clearTimeout(storyTimer);activeStory=null;storyQueue=[];page='messages';activeChat=result.chatId;await refresh(false);render();toast('스토리에 답장했습니다.'); }
-  catch(error) { toast(error.message); }
+  try { const result=await api(`/api/stories/${activeStory}/reply`,{method:'POST',body:JSON.stringify({text})});clearTimeout(storyTimer);activeStory=null;storyQueue=[];storyUserQueues=[];storyUserIndex=0;page='messages';activeChat=result.chatId;await refresh(false);render();toast('스토리에 답장했습니다.'); }
+  catch(error) { if(storyPaused)resumeStory(false);toast(error.message); }
 }
 async function logout() {
   try { await api('/api/auth/logout',{method:'POST',body:'{}'}); } catch {}
@@ -291,7 +369,7 @@ async function imageData(file,max=1200) {
   });
 }
 
-document.addEventListener('pointerup',()=>{if(storyTouchPaused){storyTouchPaused=false;resumeStory();}});
-document.addEventListener('pointercancel',()=>{if(storyTouchPaused){storyTouchPaused=false;resumeStory();}});
-document.addEventListener('keydown',event=>{if(event.key==='Escape'&&(modal||activeStory)){modal=null;if(activeStory){clearTimeout(storyTimer);activeStory=null;storyQueue=[];storyPaused=false;}render();}else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.code==='Space'){event.preventDefault();storyPaused?resumeStory():pauseStory();}else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.key==='ArrowRight')advanceStory();else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.key==='ArrowLeft'&&storyIndex>0){storyIndex-=2;advanceStory();}});
+document.addEventListener('pointerup',()=>{if(storyTouchPaused){storyIgnoreNextTap=Date.now()-storyTouchStartedAt>=250;storyTouchPaused=false;resumeStory(false);}});
+document.addEventListener('pointercancel',()=>{if(storyTouchPaused){storyTouchPaused=false;resumeStory(false);}});
+document.addEventListener('keydown',event=>{if(event.key==='Escape'&&(modal||activeStory)){modal=null;activeCommentPost=null;if(activeStory){clearTimeout(storyTimer);activeStory=null;storyQueue=[];storyUserQueues=[];storyUserIndex=0;storyPaused=false;storyPausedByInput=false;}render();}else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.code==='Space'){event.preventDefault();storyPaused?resumeStory():pauseStory();}else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.key==='ArrowRight')advanceStory();else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.key==='ArrowLeft')previousStory();});
 start();

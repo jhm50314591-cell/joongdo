@@ -159,21 +159,23 @@ app.get('/api/bootstrap', requireAuth, async (req, res, next) => {
       pool.query(`SELECT n.*,p.display_name AS actor_name,p.handle AS actor_handle,${req.query.light==='1'?"''":"p.avatar_data"} AS actor_avatar
         FROM notifications n JOIN profiles p ON p.id=n.actor_id WHERE n.recipient_id=$1 ORDER BY n.created_at DESC LIMIT 60`, [req.user.id])
     ]);
-    const postIds = posts.rows.map(p => p.id), chatIds = chats.rows.map(c => c.id);
-    const [comments, likes, messages] = await Promise.all([
+    const postIds = posts.rows.map(p => p.id), storyIds = stories.rows.map(s => s.id), chatIds = chats.rows.map(c => c.id);
+    const [comments, likes, messages, storyComments] = await Promise.all([
       postIds.length ? pool.query(`SELECT c.*,p.display_name,p.handle FROM comments c JOIN profiles p ON p.id=c.user_id WHERE c.post_id=ANY($1::bigint[]) ORDER BY c.created_at`, [postIds]) : { rows: [] },
       postIds.length ? pool.query('SELECT post_id,user_id FROM post_likes WHERE post_id=ANY($1::bigint[])', [postIds]) : { rows: [] },
-      chatIds.length ? pool.query(`SELECT m.*,p.display_name,p.handle,p.avatar_data FROM messages m JOIN profiles p ON p.id=m.user_id WHERE m.chat_id=ANY($1::bigint[]) ORDER BY m.created_at DESC LIMIT 600`, [chatIds]) : { rows: [] }
+      chatIds.length ? pool.query(`SELECT m.*,p.display_name,p.handle,p.avatar_data FROM messages m JOIN profiles p ON p.id=m.user_id WHERE m.chat_id=ANY($1::bigint[]) ORDER BY m.created_at DESC LIMIT 600`, [chatIds]) : { rows: [] },
+      storyIds.length ? pool.query(`SELECT sc.*,p.display_name,p.handle FROM story_comments sc JOIN profiles p ON p.id=sc.user_id WHERE sc.story_id=ANY($1::bigint[]) ORDER BY sc.created_at`, [storyIds]) : { rows: [] }
     ]);
-    const commentMap = new Map(), likeMap = new Map(), messageMap = new Map();
+    const commentMap = new Map(), likeMap = new Map(), messageMap = new Map(), storyCommentMap = new Map();
     for (const row of comments.rows) { const k = String(row.post_id); if (!commentMap.has(k)) commentMap.set(k, []); commentMap.get(k).push({ id: Number(row.id), user: Number(row.user_id), name: row.display_name, handle: row.handle, text: row.body, created: row.created_at }); }
+    for (const row of storyComments.rows) { const k = String(row.story_id); if (!storyCommentMap.has(k)) storyCommentMap.set(k, []); storyCommentMap.get(k).push({ id: Number(row.id), user: Number(row.user_id), name: row.display_name, handle: row.handle, text: row.body, created: row.created_at }); }
     for (const row of likes.rows) { const k = String(row.post_id); if (!likeMap.has(k)) likeMap.set(k, []); likeMap.get(k).push(Number(row.user_id)); }
     for (const row of messages.rows.reverse()) { const k = String(row.chat_id); if (!messageMap.has(k)) messageMap.set(k, []); messageMap.get(k).push({ id: Number(row.id), user: Number(row.user_id), name: row.display_name, text: row.body, created: row.created_at }); }
     res.json({
       me: { ...publicUser(req.user), photo: req.query.light==='1' ? '' : req.user.avatar_data },
       users: profiles.rows.map(row => ({ ...publicUser(row), photo: req.query.light==='1' ? '' : row.avatar_data })),
       posts: posts.rows.map(p => ({ id: Number(p.id), user: Number(p.user_id), name: p.display_name, handle: p.handle, photo: p.avatar_data, image: p.image_data, emoji: p.emoji, caption: p.caption, created: p.created_at, likes: likeMap.get(String(p.id)) || [], comments: commentMap.get(String(p.id)) || [] })),
-      stories: stories.rows.map(s => ({ id: Number(s.id), user: Number(s.user_id), name: s.display_name, photo: s.avatar_data, image: s.image_data, emoji: s.emoji, caption: s.caption, created: s.created_at, expires: s.expires_at })),
+      stories: stories.rows.map(s => ({ id: Number(s.id), user: Number(s.user_id), name: s.display_name, photo: s.avatar_data, image: s.image_data, emoji: s.emoji, caption: s.caption, created: s.created_at, expires: s.expires_at, comments: storyCommentMap.get(String(s.id)) || [] })),
       chats: chats.rows.map(c => ({ id: Number(c.id), title: c.title, group: c.is_group, members: c.member_ids.map(Number), messages: messageMap.get(String(c.id)) || [] })),
       notifications: notifications.rows.map(n => ({ id: Number(n.id), user: Number(n.actor_id), name: n.actor_name, photo: n.actor_avatar, text: n.body, kind: n.kind, created: n.created_at, read: !!n.read_at, chatId: n.chat_id ? Number(n.chat_id) : null }))
     });
@@ -241,11 +243,22 @@ app.post('/api/posts/:id/comments', requireAuth, async (req, res, next) => {
 
 app.post('/api/stories', requireAuth, async (req, res, next) => {
   try {
-      const caption = limitedText(req.body.caption, 500, '스토리 내용');
+    const caption = limitedText(req.body.caption, 500, '스토리 내용');
     const image = checkedImage(req.body.image || '');
     const emoji = limitedText(req.body.emoji, 8, '이모지') || '🌷';
     if (!caption && !image) return bad(res, 400, '사진이나 내용을 추가해 주세요.');
     const result = await pool.query(`INSERT INTO stories(user_id,caption,image_data,emoji,expires_at) VALUES($1,$2,$3,$4,NOW()+INTERVAL '24 hours') RETURNING id`, [req.user.id, caption, image, emoji]);
+    res.status(201).json({ id: Number(result.rows[0].id) });
+  } catch (error) { next(error); }
+});
+
+app.post('/api/stories/:id/comments', requireAuth, async (req, res, next) => {
+  try {
+    const body = limitedText(req.body.text, 300, '스토리 댓글', true);
+    const story = (await pool.query('SELECT id,user_id FROM stories WHERE id=$1 AND expires_at>NOW()', [req.params.id])).rows[0];
+    if (!story) return bad(res, 404, '스토리가 만료되었거나 삭제되었습니다.');
+    const result = await pool.query('INSERT INTO story_comments(story_id,user_id,body) VALUES($1,$2,$3) RETURNING id', [story.id, req.user.id, body]);
+    await notify(story.user_id, req.user.id, 'story_comment', '스토리에 댓글을 남겼습니다.', { story_id: story.id });
     res.status(201).json({ id: Number(result.rows[0].id) });
   } catch (error) { next(error); }
 });

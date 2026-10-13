@@ -55,6 +55,15 @@ CREATE TABLE IF NOT EXISTS stories (
 );
 CREATE INDEX IF NOT EXISTS stories_expiry_idx ON stories(expires_at);
 
+CREATE TABLE IF NOT EXISTS story_comments (
+  id BIGSERIAL PRIMARY KEY,
+  story_id BIGINT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS story_comments_story_idx ON story_comments(story_id,created_at);
+
 CREATE TABLE IF NOT EXISTS chats (
   id BIGSERIAL PRIMARY KEY,
   title TEXT NOT NULL,
