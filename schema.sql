@@ -23,9 +23,11 @@ CREATE TABLE IF NOT EXISTS posts (
   user_id BIGINT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
   caption TEXT NOT NULL DEFAULT '',
   image_data TEXT NOT NULL DEFAULT '',
+  images_data JSONB NOT NULL DEFAULT '[]'::jsonb,
   emoji TEXT NOT NULL DEFAULT '✨',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS images_data JSONB NOT NULL DEFAULT '[]'::jsonb;
 CREATE INDEX IF NOT EXISTS posts_created_idx ON posts(created_at DESC);
 
 CREATE TABLE IF NOT EXISTS post_likes (
@@ -64,6 +66,14 @@ CREATE TABLE IF NOT EXISTS story_comments (
 );
 CREATE INDEX IF NOT EXISTS story_comments_story_idx ON story_comments(story_id,created_at);
 
+CREATE TABLE IF NOT EXISTS story_views (
+  story_id BIGINT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  viewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY(story_id,user_id)
+);
+CREATE INDEX IF NOT EXISTS story_views_user_idx ON story_views(user_id,story_id);
+
 CREATE TABLE IF NOT EXISTS chats (
   id BIGSERIAL PRIMARY KEY,
   title TEXT NOT NULL,
@@ -99,10 +109,14 @@ CREATE TABLE IF NOT EXISTS notifications (
   story_id BIGINT REFERENCES stories(id) ON DELETE CASCADE,
   chat_id BIGINT REFERENCES chats(id) ON DELETE CASCADE,
   message_id BIGINT REFERENCES messages(id) ON DELETE CASCADE,
+  comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE,
+  story_comment_id BIGINT REFERENCES story_comments(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   read_at TIMESTAMPTZ
 );
 ALTER TABLE notifications ADD COLUMN IF NOT EXISTS message_id BIGINT REFERENCES messages(id) ON DELETE CASCADE;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS comment_id BIGINT REFERENCES comments(id) ON DELETE CASCADE;
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS story_comment_id BIGINT REFERENCES story_comments(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(recipient_id,created_at DESC);
 
 CREATE TABLE IF NOT EXISTS push_subscriptions (
