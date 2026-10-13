@@ -23,8 +23,31 @@ let storyPausedByInput = false;
 let authMode = 'login';
 let busy = false;
 let pollTimer = null;
+let pushConfig = { loaded:false, enabled:false, publicKey:'' };
+let pushRegistration = null;
+let pushSubscribed = false;
 
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[ch]);
+const iconPaths = {
+  home:'<path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+  friends:'<circle cx="9" cy="8" r="3.2"/><path d="M3 20v-1.5A4.5 4.5 0 0 1 7.5 14h3A4.5 4.5 0 0 1 15 18.5V20M16 5.2a3.2 3.2 0 0 1 0 6.1M18 14.4a4 4 0 0 1 3 3.9V20"/>',
+  messages:'<path d="M20.5 11.5a7.5 7.5 0 0 1-7.5 7.5 8 8 0 0 1-3.1-.6L4 20l1.6-4.5A7.5 7.5 0 1 1 20.5 11.5Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/>',
+  bell:'<path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9ZM10 21h4"/>',
+  profile:'<circle cx="12" cy="8" r="3.5"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/>',
+  heart:'<path d="M20.8 8.8c0 5.2-8.8 11-8.8 11s-8.8-5.8-8.8-11A4.8 4.8 0 0 1 12 6a4.8 4.8 0 0 1 8.8 2.8Z"/>',
+  comment:'<path d="M20.5 11.5a7.5 7.5 0 0 1-7.5 7.5 8 8 0 0 1-3.1-.6L4 20l1.6-4.5A7.5 7.5 0 1 1 20.5 11.5Z"/>',
+  more:'<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  plus:'<path d="M12 5v14M5 12h14"/>',
+  logout:'<path d="M10 17l5-5-5-5M15 12H3M13 4h6a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/>',
+  left:'<path d="m15 18-6-6 6-6"/>',
+  right:'<path d="m9 18 6-6-6-6"/>',
+  close:'<path d="m6 6 12 12M18 6 6 18"/>',
+  send:'<path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13"/>',
+  group:'<circle cx="9" cy="8" r="3"/><path d="M3 20v-1a6 6 0 0 1 12 0v1M16 5.5a3 3 0 0 1 0 5.8M18 14a5 5 0 0 1 3 4.6V20"/>'
+};
+function iconSvg(name, className='') {
+  return `<svg class="icon ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name]||iconPaths.profile}</svg>`;
+}
 const byId = id => state?.users.find(user => Number(user.id) === Number(id)) || { id, name:'사우', handle:'', bio:'', photo:'', color:'#767882' };
 const me = () => currentUser;
 const api = async (url, options = {}) => {
@@ -70,6 +93,9 @@ async function start() {
     await refresh(false);
     render();
     startPolling();
+    loadPushConfiguration();
+    const notificationId = Number(new URLSearchParams(location.search).get('notification'));
+    if (notificationId) openNotification(notificationId);
   } catch (error) {
     if (/로그인|만료/.test(error.message)) renderAuth();
     else renderError(error.message);
@@ -126,16 +152,18 @@ async function submitAuth(event) {
   try {
     const result = await api(`/api/auth/${authMode==='register'?'register':'login'}`, { method:'POST', body:JSON.stringify(data) });
     currentUser = result.user;
-    await refresh(false); page = 'home'; render(); startPolling();
+    await refresh(false); page = 'home'; render(); startPolling();loadPushConfiguration();
+    const notificationId=Number(new URLSearchParams(location.search).get('notification'));
+    if(notificationId)openNotification(notificationId);
   } catch (error) { renderAuth(error.message); }
 }
 
-const navItems = [['home','⌂','홈'],['friends','⌕','사우'],['messages','✉','메시지'],['notifications','♡','알림'],['profile','◉','프로필']];
+const navItems = [['home','home','홈'],['friends','friends','사우'],['messages','messages','메시지'],['notifications','bell','알림'],['profile','profile','프로필']];
 function render() {
   if (!state || !me()) return renderAuth();
   setBackground();
   document.title = '중도일보 사우회';
-  appRoot.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand" title="중도일보 사우회"><img class="brand-logo" src="/joongdo-logo.png" alt="중도일보 사우회">중도일보 사우회</div><nav class="nav">${navItems.map(([id,icon,label])=>`<button title="${label}" aria-label="${label}" class="${page===id?'active':''}" data-page="${id}"><span class="ico">${icon}</span>${label}${id==='notifications'&&state.notifications.some(n=>!n.read)?'<i class="notification-dot"></i>':''}</button>`).join('')}</nav><div class="side-bottom"><button class="profile-mini" title="프로필" aria-label="프로필" data-page="profile">${avatar(me(),'small')}</button><button class="side-logout" title="로그아웃" aria-label="로그아웃" data-logout>↪</button></div></aside><main class="main">${page==='home'?homePage():page==='messages'?messagesPage():page==='profile'?profilePage():page==='friends'?friendsPage():notificationsPage()}</main><aside class="right">${rightRail()}</aside></div><nav class="mobile-nav">${navItems.map(([id,icon,label])=>`<button aria-label="${label}" title="${label}" class="${page===id?'active':''}" data-page="${id}">${icon}</button>`).join('')}</nav>${modal?modalHtml():''}${activeStory?storyHtml():''}`;
+  appRoot.innerHTML = `<div class="shell"><aside class="sidebar"><div class="brand" title="중도일보 사우회"><img class="brand-logo" src="/joongdo-logo.png" alt="중도일보 사우회">중도일보 사우회</div><nav class="nav">${navItems.map(([id,icon,label])=>`<button title="${label}" aria-label="${label}" class="${page===id?'active':''}" data-page="${id}"><span class="ico">${iconSvg(icon)}</span>${label}${id==='notifications'&&state.notifications.some(n=>!n.read)?'<i class="notification-dot"></i>':''}</button>`).join('')}</nav><div class="side-bottom"><button class="profile-mini" title="프로필" aria-label="프로필" data-page="profile">${avatar(me(),'small')}</button><button class="side-logout" title="로그아웃" aria-label="로그아웃" data-logout>${iconSvg('logout')}</button></div></aside><main class="main">${page==='home'?homePage():page==='messages'?messagesPage():page==='profile'?profilePage():page==='friends'?friendsPage():notificationsPage()}</main><aside class="right">${rightRail()}</aside></div><nav class="mobile-nav">${navItems.map(([id,icon,label])=>`<button aria-label="${label}" title="${label}" class="${page===id?'active':''}" data-page="${id}">${iconSvg(icon)}</button>`).join('')}</nav>${modal?modalHtml():''}${activeStory?storyHtml():''}`;
   bind();
 }
 function homePage() {
@@ -146,29 +174,121 @@ function homePage() {
     storiesByUser.get(key).push(story);
   }
   const storyUsers = state.users.filter(user => Number(user.id) === Number(me().id) || storiesByUser.has(Number(user.id)));
-  return `<div class="topbar"><div><div class="eyebrow">중도일보 사우회</div><h1>안녕하세요, ${esc(me().name)}님</h1></div><button class="button" data-modal="post">＋ 게시물</button></div><section class="stories">${storyUsers.map(user=>{const userStories=storiesByUser.get(Number(user.id))||[],own=Number(user.id)===Number(me().id);return `<div class="story-tile"><button class="story" data-story-user="${user.id}"><div class="story-ring ${userStories.length?'has-story':'seen'}">${avatar(user)}</div><span>${own?'내 스토리':esc(user.name)}</span></button>${own?'<button class="story-add-trigger" data-modal="story" aria-label="새 스토리 올리기">＋</button>':''}</div>`;}).join('')}</section><div class="feed-head"><h2>사우들의 게시물</h2><span>함께 나누는 하루</span></div><button class="compose" data-modal="post">지금 소식을 나눠보세요…</button>${state.posts.map(postCard).join('')||'<div class="empty">아직 게시물이 없습니다. 첫 소식을 나눠보세요.</div>'}`;
+  return `<div class="topbar"><div><div class="eyebrow">중도일보 사우회</div><h1>안녕하세요, ${esc(me().name)}님</h1></div><button class="button create-post" data-modal="post">${iconSvg('plus')} 게시물</button></div><section class="stories">${storyUsers.map(user=>{const userStories=storiesByUser.get(Number(user.id))||[],own=Number(user.id)===Number(me().id);return `<div class="story-tile"><button class="story" data-story-user="${user.id}"><div class="story-ring ${userStories.length?'has-story':'seen'}">${avatar(user)}</div><span>${own?'내 스토리':esc(user.name)}</span></button>${own?`<button class="story-add-trigger" data-modal="story" aria-label="새 스토리 올리기">${iconSvg('plus')}</button>`:''}</div>`;}).join('')}</section><div class="feed-head"><h2>사우들의 게시물</h2><span>함께 나누는 하루</span></div><button class="compose" data-modal="post">지금 소식을 나눠보세요…</button>${state.posts.map(postCard).join('')||'<div class="empty">아직 게시물이 없습니다. 첫 소식을 나눠보세요.</div>'}`;
 }
 function postCard(post) {
   const owner = byId(post.user), liked = post.likes.includes(Number(me().id));
-  return `<article class="post"><div class="post-head">${avatar(owner,'small')}<div class="post-author"><strong>${esc(owner.name)}</strong><small>@${esc(owner.handle)} · ${when(post.created)}</small></div>${Number(post.user)===Number(me().id)?`<button class="more" aria-label="게시물 삭제" data-delete-post="${post.id}">···</button>`:''}</div>${post.image?`<img class="post-image" src="${post.image}" alt="게시물 이미지">`:`<div class="post-placeholder text-only"><span>${esc(post.caption)}</span></div>`}<div class="post-actions"><button class="${liked?'liked':''}" aria-label="좋아요" data-like="${post.id}">${liked?'♥':'♡'}</button><button aria-label="댓글 ${post.comments.length}개 보기" data-open-comments="${post.id}">◯</button><span class="post-like-count">${post.likes.length}명이 좋아합니다</span></div><div class="post-content"><div><strong>${esc(owner.name)}</strong><span class="caption">${esc(post.caption)}</span></div><button class="comment-open-link" data-open-comments="${post.id}">${post.comments.length?`댓글 ${post.comments.length}개 모두 보기`:'댓글 남기기'}</button></div></article>`;
+  return `<article class="post" id="post-${post.id}"><div class="post-head">${avatar(owner,'small')}<div class="post-author"><strong>${esc(owner.name)}</strong><small>@${esc(owner.handle)} · ${when(post.created)}</small></div>${Number(post.user)===Number(me().id)?`<button class="more" aria-label="게시물 삭제" data-delete-post="${post.id}">${iconSvg('more')}</button>`:''}</div>${post.image?`<img class="post-image" src="${post.image}" alt="게시물 이미지">`:`<div class="post-placeholder text-only"><span>${esc(post.caption)}</span></div>`}<div class="post-actions"><button class="${liked?'liked':''}" aria-label="좋아요" data-like="${post.id}">${iconSvg('heart')}</button><button aria-label="댓글 ${post.comments.length}개 보기" data-open-comments="${post.id}">${iconSvg('comment')}</button><span class="post-like-count">${post.likes.length}명이 좋아합니다</span></div><div class="post-content"><div><strong>${esc(owner.name)}</strong><span class="caption">${esc(post.caption)}</span></div><button class="comment-open-link" data-open-comments="${post.id}">${post.comments.length?`댓글 ${post.comments.length}개 모두 보기`:'댓글 남기기'}</button></div></article>`;
+}
+function notificationCard(item) {
+  const text = `${item.name||byId(item.user).name} ${item.text}`;
+  return `<button class="notification notification-button ${item.read?'':'unread'}" data-notification="${item.id}" aria-label="${esc(text)}">${avatar(byId(item.user),'small')}<span class="notification-copy"><span><b>${esc(item.name||byId(item.user).name)}</b> ${esc(item.text)}</span><em>${when(item.created)}</em></span><span class="notification-chevron">${iconSvg('right')}</span></button>`;
 }
 function rightRail() {
   const newNotifications=state.notifications.filter(item=>!item.read).slice(0,3);
-  return `<div class="right-card"><div style="display:flex;align-items:center;justify-content:space-between"><h3>내 프로필</h3><button class="follow" data-page="profile">편집</button></div><div class="user-row">${avatar(me(),'small')}<div><b>${esc(me().name)}</b><small>@${esc(me().handle)}</small></div></div><div class="eyebrow">${esc(me().bio||'소개를 추가해 보세요.')}</div></div><div class="right-card"><h3>사우회 회원 <span class="muted">· ${state.users.length}명</span></h3>${state.users.filter(user=>Number(user.id)!==Number(me().id)).slice(0,5).map(user=>`<div class="user-row">${avatar(user,'small')}<div><b>${esc(user.name)}</b><small>@${esc(user.handle)}</small></div><button class="follow" data-dm="${user.id}">메시지</button></div>`).join('')||'<div class="eyebrow">아직 다른 회원이 가입하지 않았어요.</div>'}</div><div class="right-card"><h3>새 소식</h3>${newNotifications.map(item=>`<div class="notification">${avatar(byId(item.user),'small')}<div><b>${esc(item.name||byId(item.user).name)}</b> ${esc(item.text)}<em>${when(item.created)}</em></div></div>`).join('')||'<div class="eyebrow">새 알림이 없습니다.</div>'}<button class="follow" data-page="notifications">모두 보기 →</button></div><div class="eyebrow" style="line-height:1.8">중도일보 사우회 · 2026<br>사우들과 일상을 나누는 공간</div>`;
+  return `<div class="right-card"><div style="display:flex;align-items:center;justify-content:space-between"><h3>내 프로필</h3><button class="follow" data-page="profile">편집</button></div><div class="user-row">${avatar(me(),'small')}<div><b>${esc(me().name)}</b><small>@${esc(me().handle)}</small></div></div><div class="eyebrow">${esc(me().bio||'소개를 추가해 보세요.')}</div></div><div class="right-card"><h3>사우회 회원 <span class="muted">· ${state.users.length}명</span></h3>${state.users.filter(user=>Number(user.id)!==Number(me().id)).slice(0,5).map(user=>`<div class="user-row">${avatar(user,'small')}<div><b>${esc(user.name)}</b><small>@${esc(user.handle)}</small></div><button class="follow" data-dm="${user.id}">메시지</button></div>`).join('')||'<div class="eyebrow">아직 다른 회원이 가입하지 않았어요.</div>'}</div><div class="right-card"><h3>새 소식</h3>${newNotifications.map(notificationCard).join('')||'<div class="eyebrow">새 알림이 없습니다.</div>'}<button class="follow" data-page="notifications">모두 보기 →</button></div><div class="eyebrow" style="line-height:1.8">중도일보 사우회 · 2026<br>사우들과 일상을 나누는 공간</div>`;
 }
 function friendsPage() {
   return `<div class="topbar"><div><div class="eyebrow">함께 소식을 나누는 사람들</div><h1>사우회 회원</h1></div><span class="pill">${state.users.length} / 10명</span></div>${state.users.map(user=>`<article class="right-card friend-card">${avatar(user)}<div class="friend-info"><b>${esc(user.name)}</b><div class="eyebrow">@${esc(user.handle)}</div><div class="eyebrow">${esc(user.bio||'')}</div></div>${Number(user.id)!==Number(me().id)?`<button class="button ghost" data-dm="${user.id}">메시지</button>`:'<span class="pill">나</span>'}</article>`).join('')}`;
 }
 function messagesPage() {
   const chat=state.chats.find(item=>Number(item.id)===Number(activeChat));
-  return `<div class="topbar"><div><div class="eyebrow">사우들과 이야기 나누기</div><h1>메시지</h1></div><button class="button" data-modal="chat">＋ 대화 시작</button></div><div class="chat-layout"><div class="chat-list">${state.chats.map(item=>{const other=byId(item.members.find(id=>Number(id)!==Number(me().id))),last=item.messages.at(-1);return `<button class="chat-person ${Number(item.id)===Number(activeChat)?'selected':''}" data-chat="${item.id}">${item.group?'<div class="avatar small">✺</div>':avatar(other,'small')}<span>${esc(item.title)}${last?`<small>${esc(last.text)}</small>`:''}</span></button>`}).join('')||'<div class="empty">아직 대화가 없습니다.</div>'}</div>${chat?`<section class="chat-window"><div class="chat-top">${esc(chat.title)} <span class="muted">· ${chat.members.length}명</span></div><div class="messages" id="messages">${chat.messages.map(message=>`<div class="bubble ${Number(message.user)===Number(me().id)?'mine':''}">${Number(message.user)===Number(me().id)?'':`<small>${esc(message.name||byId(message.user).name)}</small>`}${esc(message.text)}</div>`).join('')||'<div class="empty" style="margin:auto">첫 인사를 건네 보세요.</div>'}</div><form class="chat-send" id="chat-send"><input placeholder="메시지를 입력하세요…" aria-label="메시지" maxlength="2000"><button class="button">보내기</button></form></section>`:'<section class="chat-window"><div class="empty" style="margin:auto">대화를 선택하거나 새 대화를 시작하세요.</div></section>'}</div>`;
+  return `<div class="topbar"><div><div class="eyebrow">사우들과 이야기 나누기</div><h1>메시지</h1></div><button class="button create-post" data-modal="chat">${iconSvg('plus')} 대화 시작</button></div><div class="chat-layout"><div class="chat-list">${state.chats.map(item=>{const other=byId(item.members.find(id=>Number(id)!==Number(me().id))),last=item.messages.at(-1);return `<button class="chat-person ${Number(item.id)===Number(activeChat)?'selected':''}" data-chat="${item.id}">${item.group?`<span class="avatar small group-avatar">${iconSvg('group')}</span>`:avatar(other,'small')}<span>${esc(item.title)}${last?`<small>${esc(last.text)}</small>`:''}</span></button>`}).join('')||'<div class="empty">아직 대화가 없습니다.</div>'}</div>${chat?`<section class="chat-window"><div class="chat-top">${esc(chat.title)} <span class="muted">· ${chat.members.length}명</span></div><div class="messages" id="messages">${chat.messages.map(message=>`<div id="message-${message.id}" class="bubble ${Number(message.user)===Number(me().id)?'mine':''}">${Number(message.user)===Number(me().id)?'':`<small>${esc(message.name||byId(message.user).name)}</small>`}${esc(message.text)}</div>`).join('')||'<div class="empty" style="margin:auto">첫 인사를 건네 보세요.</div>'}</div><form class="chat-send" id="chat-send"><input placeholder="메시지를 입력하세요…" aria-label="메시지" maxlength="2000"><button class="button">보내기</button></form></section>`:'<section class="chat-window"><div class="empty" style="margin:auto">대화를 선택하거나 새 대화를 시작하세요.</div></section>'}</div>`;
 }
 function profilePage() {
   const posts=state.posts.filter(post=>Number(post.user)===Number(me().id));
   return `<div class="topbar"><div><div class="eyebrow">내 정보를 관리합니다</div><h1>프로필</h1></div><div class="profile-actions"><button class="button ghost" data-logout>로그아웃</button><button class="button" data-modal="profile">프로필 편집</button></div></div><section class="profile-hero">${avatar(me(),'big')}<div><h2>${esc(me().name)}</h2><div class="eyebrow">@${esc(me().handle)}</div><div class="profile-numbers"><span><b>${posts.length}</b>게시물</span><span><b>${state.stories.filter(story=>Number(story.user)===Number(me().id)).length}</b>스토리</span><span><b>${Math.max(0,state.users.length-1)}</b>사우</span></div></div></section><p class="profile-bio">${esc(me().bio||'소개를 추가해 보세요.')}</p><div class="right-card"><h3>화면 배경</h3><div class="eyebrow" style="margin-bottom:12px">배경 설정은 내 계정에 저장됩니다.</div><div class="background-options"><button class="button ghost" data-bg="">기본 다크</button><button class="button ghost" data-bg="aurora">오로라</button><button class="button ghost" data-bg="sunset">노을</button><label class="button ghost upload-label">사진 선택<input type="file" hidden accept="image/*" id="bg-upload"></label></div></div><div class="feed-head"><h2>내 게시물</h2><span>${posts.length}개</span></div>${posts.map(postCard).join('')||'<div class="empty">아직 게시물이 없습니다.</div>'}`;
 }
 function notificationsPage() {
-  return `<div class="topbar"><div><div class="eyebrow">사우들의 소식</div><h1>알림</h1></div></div><div class="right-card notifications-list">${state.notifications.map(item=>`<div class="notification">${avatar(byId(item.user),'small')}<div><b>${esc(item.name||byId(item.user).name)}</b> ${esc(item.text)}<em>${when(item.created)}</em></div></div>`).join('')||'<div class="empty">아직 알림이 없습니다.</div>'}</div>`;
+  const iosNeedsInstall = isIosDevice() && !isStandaloneApp();
+  const pushMessage = iosNeedsInstall
+    ? '아이폰은 Safari 공유 메뉴에서 홈 화면에 추가한 뒤 앱 아이콘으로 열어야 배너 알림을 받을 수 있어요.'
+    : !pushSupported() ? '현재 브라우저에서는 휴대폰 배너 알림 기능을 지원하지 않습니다.'
+    : !pushConfig.loaded ? '푸시 알림 설정을 확인하고 있어요.'
+      : !pushConfig.enabled ? '휴대폰 배너 알림을 켜려면 Render에 VAPID 키를 설정해야 해요. 배포 안내를 확인해 주세요.'
+        : pushSubscribed ? '이 기기에서 새 댓글과 메시지 배너를 받고 있어요.' : '이 기기에서 새 댓글과 메시지 배너를 받아 보세요.';
+  const canTogglePush = pushConfig.enabled && pushSupported() && (!isIosDevice() || isStandaloneApp());
+  return `<div class="topbar notification-topbar"><div><div class="eyebrow">사우들의 소식</div><h1>알림</h1></div>${canTogglePush?`<button class="button ghost push-toggle" data-push-toggle>${pushSubscribed?'알림 끄기':'알림 켜기'}</button>`:''}</div><div class="push-note">${iconSvg('bell')}<span>${pushMessage}</span></div><div class="right-card notifications-list">${state.notifications.map(notificationCard).join('')||'<div class="empty">아직 알림이 없습니다.</div>'}</div>`;
+}
+function isIosDevice() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+}
+function isStandaloneApp() {
+  return navigator.standalone===true || window.matchMedia('(display-mode: standalone)').matches;
+}
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+function base64UrlBytes(value) {
+  const padded=value+'='.repeat((4-value.length%4)%4);
+  const binary=atob(padded.replace(/-/g,'+').replace(/_/g,'/'));
+  return Uint8Array.from(binary,character=>character.charCodeAt(0));
+}
+async function loadPushConfiguration() {
+  try { pushConfig={...await api('/api/push/config'),loaded:true}; }
+  catch { pushConfig={loaded:true,enabled:false,publicKey:''}; }
+  if(pushConfig.enabled&&pushSupported()&&(!isIosDevice()||isStandaloneApp())) {
+    try {
+      pushRegistration=await navigator.serviceWorker.register('/service-worker.js');
+      const subscription=await pushRegistration.pushManager.getSubscription();
+      pushSubscribed=Boolean(subscription);
+      if(subscription) await api('/api/push/subscriptions',{method:'POST',body:JSON.stringify(subscription.toJSON())});
+    } catch { pushSubscribed=false; }
+  }
+  if(page==='notifications')render();
+}
+async function togglePushNotifications() {
+  if(!pushConfig.enabled) { toast('Render에서 푸시 알림 환경변수를 먼저 설정해 주세요.'); return; }
+  if(!pushSupported()) { toast('현재 브라우저에서는 푸시 알림을 지원하지 않습니다.'); return; }
+  if(isIosDevice()&&!isStandaloneApp()) { toast('Safari 공유 메뉴에서 홈 화면에 추가한 뒤 앱 아이콘으로 열어 주세요.'); return; }
+  try {
+    pushRegistration ||= await navigator.serviceWorker.register('/service-worker.js');
+    const existing=await pushRegistration.pushManager.getSubscription();
+    if(pushSubscribed&&existing) {
+      await api('/api/push/subscriptions',{method:'DELETE',body:JSON.stringify({endpoint:existing.endpoint})});
+      await existing.unsubscribe();pushSubscribed=false;render();toast('이 기기의 푸시 알림을 껐습니다.');return;
+    }
+    const permission=await Notification.requestPermission();
+    if(permission!=='granted') { toast('휴대폰 설정에서 사이트 알림을 허용해 주세요.');return; }
+    const subscription=existing||await pushRegistration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:base64UrlBytes(pushConfig.publicKey)});
+    await api('/api/push/subscriptions',{method:'POST',body:JSON.stringify(subscription.toJSON())});
+    pushSubscribed=true;render();toast('이 기기의 푸시 알림을 켰습니다.');
+  } catch(error) { toast(error.message||'푸시 알림을 설정하지 못했습니다.'); }
+}
+async function openNotification(notificationId) {
+  const notification=state?.notifications.find(item=>Number(item.id)===Number(notificationId));
+  const targetUrl=new URL(location.href);targetUrl.searchParams.delete('notification');
+  history.replaceState({},'',targetUrl.pathname+targetUrl.search+targetUrl.hash);
+  if(!notification)return;
+  try {
+    if(!notification.read) await api(`/api/notifications/${notification.id}/read`,{method:'PATCH',body:'{}'});
+    await refresh(false);
+  } catch {}
+  modal=null;activeCommentPost=null;
+  if(notification.chatId) {
+    page='messages';activeChat=notification.chatId;activeStory=null;render();
+    requestAnimationFrame(()=>{
+      const message=document.getElementById(notification.messageId?`message-${notification.messageId}`:'');
+      if(message)message.scrollIntoView({behavior:'smooth',block:'center'});
+      else document.querySelector('#messages')?.scrollTo(0,999999);
+    });
+    return;
+  }
+  if(notification.storyId) {
+    page='home';activeStory=null;render();
+    if(!openStoryById(notification.storyId))toast('해당 스토리는 만료되었거나 삭제되었습니다.');
+    return;
+  }
+  if(notification.postId) {
+    page='home';activeStory=null;
+    const postExists=state.posts.some(post=>Number(post.id)===Number(notification.postId));
+    const shouldOpenComments=notification.kind==='comment'&&postExists;
+    activeCommentPost=shouldOpenComments?notification.postId:null;modal=shouldOpenComments?'comments':null;render();
+    requestAnimationFrame(()=>document.getElementById(`post-${notification.postId}`)?.scrollIntoView({behavior:'smooth',block:'center'}));
+    if(!postExists)toast('해당 게시물이 피드에서 보이지 않습니다.');
+    return;
+  }
+  page='notifications';render();
 }
 
 function modalHtml() {
@@ -181,7 +301,7 @@ function modalHtml() {
   }
   if (modal==='profile') content=`<form id="profile-form"><label class="field">이름<input name="name" required maxlength="30" value="${esc(me().name)}"></label><label class="field">사용자 이름<input name="handle" required maxlength="24" value="${esc(me().handle)}"></label><label class="field">소개<textarea name="bio" maxlength="120">${esc(me().bio)}</textarea></label><label class="field">프로필 사진<input name="photo" type="file" accept="image/*"></label><div id="profile-preview"></div><button class="button full">저장하기</button></form>`;
   if (modal==='chat') content=`<form id="chat-form"><label class="field">대화 이름<input name="title" maxlength="50" placeholder="예: 주말 약속"></label><div class="field">함께할 사우들${state.users.filter(user=>Number(user.id)!==Number(me().id)).map(user=>`<label class="member-option"><input type="checkbox" name="members" value="${user.id}">${esc(user.name)}</label>`).join('')||'<p class="eyebrow">아직 다른 회원이 가입하지 않았습니다.</p>'}</div><button class="button full">대화 만들기</button></form>`;
-  return `<div class="modal-backdrop" id="modal-bg"><section class="modal ${modal==='comments'?'comments-modal':''}"><header class="modal-head"><h2>${titles[modal]}</h2><button class="close" data-close>×</button></header>${content}</section></div>`;
+  return `<div class="modal-backdrop" id="modal-bg"><section class="modal ${modal==='comments'?'comments-modal':''}"><header class="modal-head"><h2>${titles[modal]}</h2><button class="close" data-close aria-label="닫기">${iconSvg('close')}</button></header>${content}</section></div>`;
 }
 function storyHtml() {
   const story=state.stories.find(item=>Number(item.id)===Number(activeStory));
@@ -191,7 +311,7 @@ function storyHtml() {
   const segments=storyQueue.map((item,index)=>`<span class="story-progress-segment ${index<currentIndex?'completed':index===currentIndex?'current':'future'}"><i style="--story-progress:${index<currentIndex?1:index===currentIndex?storyProgress:0};--story-remaining:${index===currentIndex?storyRemaining:0}ms;--story-play-state:${storyPaused?'paused':'running'}"></i></span>`).join('');
   const storyComments=story.comments||[];
   const canMessage=Number(story.user)!==Number(me().id);
-  return `<div class="modal-backdrop" id="story-bg"><button class="story-arrow story-arrow-prev" data-story-prev aria-label="이전 스토리" ${!hasPreviousStory()?'disabled':''}>‹</button><section class="story-view" style="${story.image?`background-image:linear-gradient(#0005,#0005),url('${story.image}')`:''}"><div><div class="story-progress">${segments}</div><div class="story-owner">${avatar(owner,'small')}<b>${esc(owner.name)}</b><small>${when(story.created)}</small><button class="story-play-toggle" data-story-toggle aria-label="${storyPaused?'스토리 재생':'스토리 일시정지'}">${storyPaused?'▶':'■'}</button><button class="close" data-close-story>×</button></div></div><div class="story-content">${!story.image&&story.emoji?`<div class="story-emoji">${esc(story.emoji)}</div>`:''}<div>${esc(story.caption)}</div></div><div class="story-footer"><div class="story-comment-list">${storyComments.slice(-3).map(comment=>`<div><b>${esc(comment.name||byId(comment.user).name)}</b> ${esc(comment.text)}</div>`).join('')}</div><form class="story-comment-form" id="story-comment"><input maxlength="300" placeholder="스토리에 댓글 남기기…" aria-label="스토리 댓글"><button aria-label="댓글 보내기">↑</button></form>${canMessage?`<button class="story-private-toggle" data-story-private-toggle>비공개 메시지로 답장</button><form class="story-msg" id="story-reply" hidden><input maxlength="300" placeholder="${esc(owner.name)}님에게 비공개 답장…"><button>보내기</button></form>`:''}</div></section><button class="story-arrow story-arrow-next" data-story-next aria-label="다음 스토리" ${!hasNextStory()?'disabled':''}>›</button></div>`;
+  return `<div class="modal-backdrop" id="story-bg"><button class="story-arrow story-arrow-prev" data-story-prev aria-label="이전 스토리" ${!hasPreviousStory()?'disabled':''}>${iconSvg('left')}</button><section class="story-view" style="${story.image?`background-image:linear-gradient(#0005,#0005),url('${story.image}')`:''}"><div><div class="story-progress">${segments}</div><div class="story-owner">${avatar(owner,'small')}<b>${esc(owner.name)}</b><small>${when(story.created)}</small><button class="story-play-toggle" data-story-toggle aria-label="${storyPaused?'스토리 재생':'스토리 일시정지'}">${storyPaused?'▶':'■'}</button><button class="close" data-close-story aria-label="닫기">${iconSvg('close')}</button></div></div><div class="story-content">${!story.image&&story.emoji?`<div class="story-emoji">${esc(story.emoji)}</div>`:''}<div>${esc(story.caption)}</div></div><div class="story-footer"><div class="story-comment-list">${storyComments.slice(-3).map(comment=>`<div><b>${esc(comment.name||byId(comment.user).name)}</b> ${esc(comment.text)}</div>`).join('')}</div><form class="story-comment-form" id="story-comment"><input maxlength="300" placeholder="스토리에 댓글 남기기…" aria-label="스토리 댓글"><button aria-label="댓글 보내기">${iconSvg('send')}</button></form>${canMessage?`<button class="story-private-toggle" data-story-private-toggle>비공개 메시지로 답장</button><form class="story-msg" id="story-reply" hidden><input maxlength="300" placeholder="${esc(owner.name)}님에게 비공개 답장…"><button>보내기</button></form>`:''}</div></section><button class="story-arrow story-arrow-next" data-story-next aria-label="다음 스토리" ${!hasNextStory()?'disabled':''}>${iconSvg('right')}</button></div>`;
 }
 
 function buildStoryUserQueues() {
@@ -206,6 +326,15 @@ function openStoryUser(userId) {
   storyUserIndex=storyUserQueues.findIndex(group=>group.userId===Number(userId));
   if (storyUserIndex<0) { modal='story';modalDraft={};render();return; }
   storyQueue=storyUserQueues[storyUserIndex].stories;showStory(0);
+}
+function openStoryById(storyId) {
+  storyUserQueues=buildStoryUserQueues();
+  storyUserIndex=storyUserQueues.findIndex(group=>group.stories.some(item=>Number(item.id)===Number(storyId)));
+  if(storyUserIndex<0)return false;
+  storyQueue=storyUserQueues[storyUserIndex].stories;
+  const index=storyQueue.findIndex(item=>Number(item.id)===Number(storyId));
+  if(index<0)return false;
+  showStory(index);return true;
 }
 function startStoryTimer() {
   clearTimeout(storyTimer);
@@ -252,11 +381,12 @@ function closeStory() {
 }
 
 function bind() {
-  document.querySelectorAll('[data-page]').forEach(button=>button.onclick=async()=>{
+  document.querySelectorAll('[data-page]').forEach(button=>button.onclick=()=>{
     page=button.dataset.page;
-    if (page==='notifications') { try { await api('/api/notifications/read',{method:'PATCH',body:'{}'}); await refresh(false); } catch {} }
     render();
   });
+  document.querySelectorAll('[data-notification]').forEach(button=>button.onclick=()=>openNotification(button.dataset.notification));
+  document.querySelectorAll('[data-push-toggle]').forEach(button=>button.onclick=togglePushNotifications);
   document.querySelectorAll('[data-modal]').forEach(button=>button.onclick=()=>{modal=button.dataset.modal;modalDraft={};render();});
   document.querySelectorAll('[data-close]').forEach(button=>button.onclick=()=>{modal=null;activeCommentPost=null;render();});
   document.querySelector('#modal-bg')?.addEventListener('click',event=>{if(event.target.id==='modal-bg'){modal=null;activeCommentPost=null;render();}});
@@ -358,6 +488,10 @@ async function sendStoryReply(event) {
   catch(error) { if(storyPaused)resumeStory(false);toast(error.message); }
 }
 async function logout() {
+  try {
+    const subscription=await pushRegistration?.pushManager.getSubscription();
+    if(subscription){await api('/api/push/subscriptions',{method:'DELETE',body:JSON.stringify({endpoint:subscription.endpoint})});await subscription.unsubscribe();}
+  } catch {}
   try { await api('/api/auth/logout',{method:'POST',body:'{}'}); } catch {}
   currentUser=null;state=null;activeChat=null;clearInterval(pollTimer);authMode='login';renderAuth();
 }
@@ -371,5 +505,8 @@ async function imageData(file,max=1200) {
 
 document.addEventListener('pointerup',()=>{if(storyTouchPaused){storyIgnoreNextTap=Date.now()-storyTouchStartedAt>=250;storyTouchPaused=false;resumeStory(false);}});
 document.addEventListener('pointercancel',()=>{if(storyTouchPaused){storyTouchPaused=false;resumeStory(false);}});
+if('serviceWorker' in navigator)navigator.serviceWorker.addEventListener('message',event=>{
+  if(event.data?.type==='open-notification')openNotification(Number(event.data.notificationId));
+});
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&(modal||activeStory)){modal=null;activeCommentPost=null;if(activeStory){clearTimeout(storyTimer);activeStory=null;storyQueue=[];storyUserQueues=[];storyUserIndex=0;storyPaused=false;storyPausedByInput=false;}render();}else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.code==='Space'){event.preventDefault();storyPaused?resumeStory():pauseStory();}else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.key==='ArrowRight')advanceStory();else if(activeStory&&!['INPUT','TEXTAREA'].includes(document.activeElement?.tagName)&&event.key==='ArrowLeft')previousStory();});
 start();

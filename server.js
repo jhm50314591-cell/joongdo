@@ -9,6 +9,11 @@ const app = express();
 const port = Number(process.env.PORT || 10000);
 const maxUsers = Math.min(10, Math.max(2, Number(process.env.MAX_USERS) || 10));
 const sessionDays = 30;
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY || '';
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY || '';
+const vapidSubject = process.env.VAPID_SUBJECT || '';
+const pushConfigured = Boolean(vapidPublicKey && vapidPrivateKey && vapidSubject);
+let webpush = null;
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : undefined,
@@ -87,8 +92,32 @@ function limitedText(value, max, label, required = false) {
 }
 async function notify(recipient, actor, kind, body, refs = {}) {
   if (Number(recipient) === Number(actor)) return;
-  await pool.query(`INSERT INTO notifications(recipient_id,actor_id,kind,body,post_id,story_id,chat_id)
-    VALUES($1,$2,$3,$4,$5,$6,$7)`, [recipient, actor, kind, body, refs.post_id || null, refs.story_id || null, refs.chat_id || null]);
+  const saved = await pool.query(`INSERT INTO notifications(recipient_id,actor_id,kind,body,post_id,story_id,chat_id,message_id)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id`, [recipient, actor, kind, body, refs.post_id || null, refs.story_id || null, refs.chat_id || null, refs.message_id || null]);
+  if (pushConfigured) {
+    void sendWebPush(recipient, {
+      title: '중도일보 사우회',
+      body,
+      notificationId: Number(saved.rows[0].id),
+      url: `/?notification=${Number(saved.rows[0].id)}`
+    });
+  }
+}
+async function sendWebPush(userId, payload) {
+  try {
+    const subscriptions = await pool.query('SELECT id,endpoint,subscription FROM push_subscriptions WHERE user_id=$1', [userId]);
+    await Promise.allSettled(subscriptions.rows.map(async row => {
+      try {
+        await webpush.sendNotification(row.subscription, JSON.stringify(payload), { TTL: 3600, urgency: 'high' });
+      } catch (error) {
+        if ([404, 410].includes(Number(error.statusCode))) {
+          await pool.query('DELETE FROM push_subscriptions WHERE id=$1', [row.id]);
+        } else {
+          console.error('푸시 알림 전송 실패:', error.statusCode || error.message);
+        }
+      }
+    }));
+  } catch (error) { console.error('푸시 알림 처리 실패:', error.message); }
 }
 
 app.get('/api/health', async (req, res) => {
@@ -177,7 +206,7 @@ app.get('/api/bootstrap', requireAuth, async (req, res, next) => {
       posts: posts.rows.map(p => ({ id: Number(p.id), user: Number(p.user_id), name: p.display_name, handle: p.handle, photo: p.avatar_data, image: p.image_data, emoji: p.emoji, caption: p.caption, created: p.created_at, likes: likeMap.get(String(p.id)) || [], comments: commentMap.get(String(p.id)) || [] })),
       stories: stories.rows.map(s => ({ id: Number(s.id), user: Number(s.user_id), name: s.display_name, photo: s.avatar_data, image: s.image_data, emoji: s.emoji, caption: s.caption, created: s.created_at, expires: s.expires_at, comments: storyCommentMap.get(String(s.id)) || [] })),
       chats: chats.rows.map(c => ({ id: Number(c.id), title: c.title, group: c.is_group, members: c.member_ids.map(Number), messages: messageMap.get(String(c.id)) || [] })),
-      notifications: notifications.rows.map(n => ({ id: Number(n.id), user: Number(n.actor_id), name: n.actor_name, photo: n.actor_avatar, text: n.body, kind: n.kind, created: n.created_at, read: !!n.read_at, chatId: n.chat_id ? Number(n.chat_id) : null }))
+      notifications: notifications.rows.map(n => ({ id: Number(n.id), user: Number(n.actor_id), name: n.actor_name, photo: n.actor_avatar, text: n.body, kind: n.kind, created: n.created_at, read: !!n.read_at, postId: n.post_id ? Number(n.post_id) : null, storyId: n.story_id ? Number(n.story_id) : null, chatId: n.chat_id ? Number(n.chat_id) : null, messageId: n.message_id ? Number(n.message_id) : null }))
     });
   } catch (error) { next(error); }
 });
@@ -305,9 +334,9 @@ app.post('/api/chats/:id/messages', requireAuth, async (req, res, next) => {
     const body = limitedText(req.body.text, 2000, '메시지', true);
     const members = await pool.query('SELECT user_id FROM chat_members WHERE chat_id=$1', [req.params.id]);
     if (!members.rows.some(m => Number(m.user_id) === Number(req.user.id))) return bad(res, 404, '대화방을 찾지 못했습니다.');
-    await pool.query('INSERT INTO messages(chat_id,user_id,body) VALUES($1,$2,$3)', [req.params.id, req.user.id, body]);
+    const message = await pool.query('INSERT INTO messages(chat_id,user_id,body) VALUES($1,$2,$3) RETURNING id', [req.params.id, req.user.id, body]);
     const chat = (await pool.query('SELECT title FROM chats WHERE id=$1', [req.params.id])).rows[0];
-    for (const member of members.rows) await notify(member.user_id, req.user.id, 'message', `${chat.title} 대화방에 새 메시지가 있습니다.`, { chat_id: req.params.id });
+    for (const member of members.rows) await notify(member.user_id, req.user.id, 'message', `${chat.title} 대화방에 새 메시지가 있습니다.`, { chat_id: req.params.id, message_id: message.rows[0].id });
     res.status(201).json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -318,14 +347,45 @@ app.post('/api/stories/:id/reply', requireAuth, async (req, res, next) => {
     if (!story) return bad(res, 404, '스토리가 만료되었거나 삭제되었습니다.');
     if (Number(story.user_id) === Number(req.user.id)) return bad(res, 400, '내 스토리에는 답장할 수 없습니다.');
     const chatId = await createChatForUsers([req.user.id, story.user_id], '', req.user.id);
-    await pool.query('INSERT INTO messages(chat_id,user_id,body) VALUES($1,$2,$3)', [chatId, req.user.id, `스토리에 답장: ${body}`]);
-    await notify(story.user_id, req.user.id, 'story_reply', '스토리에 답장을 보냈습니다.', { story_id: story.id, chat_id: chatId });
+    const message = await pool.query('INSERT INTO messages(chat_id,user_id,body) VALUES($1,$2,$3) RETURNING id', [chatId, req.user.id, `스토리에 답장: ${body}`]);
+    await notify(story.user_id, req.user.id, 'story_reply', '스토리에 답장을 보냈습니다.', { story_id: story.id, chat_id: chatId, message_id: message.rows[0].id });
     res.status(201).json({ chatId });
   } catch (error) { next(error); }
 });
 app.patch('/api/notifications/read', requireAuth, async (req, res, next) => {
   try { await pool.query('UPDATE notifications SET read_at=NOW() WHERE recipient_id=$1 AND read_at IS NULL', [req.user.id]); res.json({ ok: true }); }
   catch (error) { next(error); }
+});
+app.patch('/api/notifications/:id/read', requireAuth, async (req, res, next) => {
+  try {
+    const result = await pool.query('UPDATE notifications SET read_at=COALESCE(read_at,NOW()) WHERE id=$1 AND recipient_id=$2', [req.params.id, req.user.id]);
+    if (!result.rowCount) return bad(res, 404, '알림을 찾지 못했습니다.');
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+app.get('/api/push/config', requireAuth, (req, res) => {
+  res.json({ enabled: pushConfigured, publicKey: pushConfigured ? vapidPublicKey : '' });
+});
+app.post('/api/push/subscriptions', requireAuth, async (req, res, next) => {
+  try {
+    if (!pushConfigured) return bad(res, 503, 'Render 푸시 알림 환경변수를 먼저 설정해 주세요.');
+    const subscription = req.body;
+    const endpoint = limitedText(subscription?.endpoint, 2048, '푸시 주소', true);
+    const parsedEndpoint = new URL(endpoint);
+    if (parsedEndpoint.protocol !== 'https:' || typeof subscription?.keys?.p256dh !== 'string' || typeof subscription?.keys?.auth !== 'string') {
+      return bad(res, 400, '푸시 구독 정보를 확인할 수 없습니다.');
+    }
+    await pool.query(`INSERT INTO push_subscriptions(user_id,endpoint,subscription) VALUES($1,$2,$3::jsonb)
+      ON CONFLICT(endpoint) DO UPDATE SET user_id=EXCLUDED.user_id,subscription=EXCLUDED.subscription`, [req.user.id, endpoint, JSON.stringify(subscription)]);
+    res.status(201).json({ ok: true });
+  } catch (error) { next(error); }
+});
+app.delete('/api/push/subscriptions', requireAuth, async (req, res, next) => {
+  try {
+    const endpoint = limitedText(req.body.endpoint, 2048, '푸시 주소', true);
+    await pool.query('DELETE FROM push_subscriptions WHERE user_id=$1 AND endpoint=$2', [req.user.id, endpoint]);
+    res.json({ ok: true });
+  } catch (error) { next(error); }
 });
 
 app.use(express.static(path.join(__dirname, 'public'), {
@@ -341,6 +401,10 @@ app.use((error, req, res, next) => {
 
 async function start() {
   if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL 환경변수가 필요합니다.');
+  if (pushConfigured) {
+    webpush = await import('web-push');
+    webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+  }
   const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
   await pool.query(schema);
   setInterval(() => pool.query('DELETE FROM sessions WHERE expires_at<NOW(); DELETE FROM stories WHERE expires_at<NOW()').catch(console.error), 60 * 60 * 1000).unref();

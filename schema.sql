@@ -98,7 +98,18 @@ CREATE TABLE IF NOT EXISTS notifications (
   post_id BIGINT REFERENCES posts(id) ON DELETE CASCADE,
   story_id BIGINT REFERENCES stories(id) ON DELETE CASCADE,
   chat_id BIGINT REFERENCES chats(id) ON DELETE CASCADE,
+  message_id BIGINT REFERENCES messages(id) ON DELETE CASCADE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   read_at TIMESTAMPTZ
 );
+ALTER TABLE notifications ADD COLUMN IF NOT EXISTS message_id BIGINT REFERENCES messages(id) ON DELETE CASCADE;
 CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(recipient_id,created_at DESC);
+
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  subscription JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS push_subscriptions_user_idx ON push_subscriptions(user_id);

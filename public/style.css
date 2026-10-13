@@ -199,3 +199,43 @@ small{font-size:12px}
   .story-comment-form input{padding:10px 13px}
   .story-comment-form button{width:40px;height:40px}
 }
+
+/* Clean monochrome line icons and direct notification actions */
+.icon{display:block;width:22px;height:22px;flex:none;color:currentColor}
+.nav .ico{display:grid;place-items:center;width:24px;height:24px}
+.nav .ico .icon{width:23px;height:23px}
+.mobile-nav .icon{width:24px;height:24px;margin:auto}
+.side-logout{display:grid;place-items:center}
+.side-logout .icon{width:22px;height:22px}
+.post-actions button{display:grid;place-items:center;width:30px;height:30px;color:#f0f0f1}
+.post-actions .icon{width:23px;height:23px}
+.post-actions button.liked .icon{fill:#f0f0f1}
+.more .icon{width:21px;height:21px}
+.create-post{display:inline-flex;align-items:center;gap:8px}
+.create-post .icon{width:17px;height:17px}
+.story-add-trigger{display:grid;place-items:center}
+.story-add-trigger .icon{width:14px;height:14px}
+.group-avatar{place-items:center;background:#3b3c40!important}
+.group-avatar .icon{width:20px;height:20px}
+.close{display:grid;place-items:center;width:34px;height:34px;border-radius:50%}
+.close .icon{width:20px;height:20px}
+.story-arrow .icon{width:25px;height:25px}
+.story-comment-form button{display:grid;place-items:center}
+.story-comment-form .icon{width:18px;height:18px}
+.notification-button{width:100%;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}
+.notification-button:hover,.notification-button:focus-visible{background:#ffffff0a;outline:0}
+.notification-button.unread{background:#ffffff08}
+.notification-copy{flex:1;min-width:0;line-height:1.5;overflow-wrap:anywhere}
+.notification-chevron{display:grid;place-items:center;color:#8d8e94}
+.notification-chevron .icon{width:17px;height:17px}
+.notifications-list .notification-button{padding:13px 8px;border-radius:12px}
+.right-card .notification-button{padding:8px 3px;border-radius:10px}
+.push-note{display:flex;align-items:flex-start;gap:10px;margin:-8px 0 16px;padding:13px 15px;border:1px solid var(--line);border-radius:14px;background:#111214;color:#bfc0c5;font-size:13px;line-height:1.5}
+.push-note .icon{width:18px;height:18px;margin-top:1px;color:#eee}
+.push-toggle{white-space:nowrap}
+@media(max-width:680px){
+  input,textarea,select{font-size:16px!important}
+  .push-note{font-size:13px}
+  .notification-topbar{align-items:flex-start;gap:12px}
+  .notification-topbar .push-toggle{padding:10px 12px;font-size:13px}
+}
